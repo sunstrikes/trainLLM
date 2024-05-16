@@ -4,7 +4,8 @@ typora-copy-images-to: ./assets
 
 ## attention 原理
 
-<img src="/Users/sunminqi/code/github/trainLLM/src/operator/flash_attention/assets/image-20240516170029031.png" alt="image-20240516170029031" style="zoom: 33%;" />
+
+<img src="./assets/self_attention.png" alt="image-20240516170029031" style="zoom: 33%;" />
 
 以self-attention为例:
 
@@ -16,19 +17,19 @@ typora-copy-images-to: ./assets
 
 那么Q, K, V是怎么得到的呢?
 
-<img src="/Users/sunminqi/code/github/trainLLM/src/operator/flash_attention/assets/image-20240516172037022.png" alt="image-20240516172037022" style="zoom:33%;" />
+<img src="./assets/attention_qkv.png" alt="image-20240516172037022" style="zoom:33%;" />
 
 X是词向量矩阵, 这里2代表batch_size, 4代表词向量长度. 与dense WQ,WK,WV分别做一次矩阵乘法得到Q,K,V
 
 Multihead_attention其实就是指定了 X通过和多个WQ相乘得到多个Q/K/V, 最后再通过再合一个W0权重相乘得到最终合并后的Z
 
-<img src="/Users/sunminqi/code/github/trainLLM/src/operator/flash_attention/assets/image-20240516173008961.png" alt="image-20240516173008961" style="zoom:33%;" />
+<img src="./assets/multihead.png" alt="image-20240516173008961" style="zoom:33%;" />
 
 ## attention backward
 
 ### out bp
 
-以`attention_backward_cpu`中的`dvalue_t2`为例, 根据链式求导法则<img src="/Users/sunminqi/code/github/trainLLM/src/operator/flash_attention/assets/image-20240516194532989.png" alt="image-20240516194532989" style="zoom:33%;" />
+以`attention_backward_cpu`中的`dvalue_t2`为例, 根据链式求导法则<img src="./assets/backward.png" alt="backward" style="zoom:33%;" />
 
 dout/dv 是 `out_bth += att_bth * value_t2 `对V求导, 得到的就是att_bth的前向值, 所以就有了
 
@@ -36,8 +37,8 @@ dout/dv 是 `out_bth += att_bth * value_t2 `对V求导, 得到的就是att_bth�
 
 ### softmax bp:
 
-<img src="/Users/sunminqi/code/github/trainLLM/src/operator/flash_attention/assets/image-20240516195713607.png" alt="image-20240516195713607" style="zoom:33%;" />
+<img src="./assets/softmax_bp1.png" alt="softmax_bp1" style="zoom:33%;" />
 
-<img src="/Users/sunminqi/code/github/trainLLM/src/operator/flash_attention/assets/image-20240516195725744.png" alt="image-20240516195725744" style="zoom:33%;" />
+<img src="./assets/softmax_bp2.png" alt="softmax_bp2" style="zoom:33%;" />
 
 这里为了简化逻辑 使用了indicator来区分i=j和i!=j的情况
