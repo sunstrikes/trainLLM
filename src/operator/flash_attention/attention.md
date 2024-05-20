@@ -42,3 +42,6 @@ dout/dv 是 `out_bth += att_bth * value_t2 `对V求导, 得到的就是att_bth�
 <img src="./assets/softmax_bp2.png" alt="softmax_bp2" style="zoom:33%;" />
 
 这里为了简化逻辑 使用了indicator来区分i=j和i!=j的情况
+
+## FlashAttention
+
