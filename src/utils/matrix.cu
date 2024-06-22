@@ -2,7 +2,7 @@
 #include <iostream>
 #include <vector>
 #include <random>
-#include <iomanip>
+
 #include "time_recorder.h"
 #include "util.h"
 
@@ -170,14 +170,138 @@ __global__ void matmul_naive_kernel(const float* a, const float* b, float* c, in
     }
 }
 
-//float4 & shm
-template<int BK=8, int BM=128, int BN=128>
+// 列主序
+template <int BK = 16>
+__global__ void matmul_kernel_shm(const float* a, const float* b, float* c, int M, int K, int N) {
+    __shared__ float shm_a[BK][BK];
+    __shared__ float shm_b[BK][BK];
+    const int bx = blockIdx.x;
+    const int by = blockIdx.y;
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int row_a = bx * BK;
+    const int col_b = by * BK;
+    if (row_a + tx < M && col_b + ty < N) {
+        float sum = 0.0;
+        for (int i = 0; i < (K + BK - 1) / BK; ++i) {
+            if (i * BK > K) {
+                break;
+            }
+            const int col_a = i * BK;
+            const int row_b = col_a;
+            shm_a[tx][ty] = a[(row_a + tx) * K + col_a + ty];
+            shm_b[ty][tx] = b[(row_b + tx) * N + col_b + ty];
+            __syncthreads();
+#pragma unroll
+            for (int k = 0; k < BK; ++k) {
+                sum += shm_a[tx][k] * shm_b[ty][k];
+                __syncthreads();
+            }
+        }
+        c[(row_a + tx) * M + col_b + ty] = sum;
+    }
+}
+
+// 行主序, 这个是正确的顺序, cuda 2维block是按照先x后y的顺序访问
+// 对比列主序的性能提升10%
+template <int BK = 16>
+__global__ void matmul_kernel_shm_row(const float* a, const float* b, float* c, int M, int K, int N) {
+    __shared__ float shm_a[BK][BK];
+    __shared__ float shm_b[BK][BK];
+    const int bx = blockIdx.x;
+    const int by = blockIdx.y;
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int row_a = by * BK;
+    const int col_b = bx * BK;
+    if (row_a + ty < M && col_b + tx < N) {
+        float sum = 0.0;
+        for (int i = 0; i < (K + BK - 1) / BK; ++i) {
+            if (i * BK > K) {
+                break;
+            }
+            const int col_a = i * BK;
+            const int row_b = col_a;
+            shm_a[ty][tx] = a[(row_a + ty) * K + col_a + tx];
+            shm_b[tx][ty] = b[(row_b + ty) * N + col_b + tx];
+            __syncthreads();
+#pragma unroll
+            for (int k = 0; k < BK; ++k) {
+                sum += shm_a[ty][k] * shm_b[tx][k];
+                __syncthreads();
+            }
+        }
+        c[(row_a + ty) * M + col_b + tx] = sum;
+    }
+}
+
+#define FLOAT4(x) *(reinterpret_cast<float4*>(&(x)))
+#define CONST_FLOAT4(x) *(reinterpret_cast<const float4*>(&(x)))
+// float4 & shm
+template <int BK = 8, int BM = 128, int BN = 128>
 __global__ void matmul_kernel_float4_shm(const float* a, const float* b, float* c, int M, int K, int N) {
-    //1. 从gloabl->shm
-    for 
-    //2. 从shm->reg
-    //3. cal matmul
-    //4. 写回gloabl
+    // 1. 从gloabl->shm
+    __shared__ float shm_a[BM][BK];
+    __shared__ float shm_b[BK][BN];
+
+    const int TM = 8;
+    const int TN = 8;
+    float reg_c[TM][TN] = {0.0};
+
+    const int bx = blockIdx.x;
+    const int by = blockIdx.y;
+    const int tx = threadIdx.x;
+    const int ty = threadIdx.y;
+    const int tid = ty * blockDim.x + tx;
+
+    // 每个block要从global取128*8的数据, 共256线程, 每个线程取一个float4
+    const int row_a_m = tid >> 1;        // 0, 0, 1, 1, 2, 2, ...
+    const int col_a_k = (tid & 1) << 2;  // 0, 4, 0, 4, 0, 4, ...
+    const int row_b_k = tid >> 5;        // 128/4 = 32
+    const int col_b_n = (tid % 32) << 2;
+
+    int gmem_a_off = by * BM + row_a_m;
+    int gmem_b_off = bx * BN + col_b_n;
+
+    if (gmem_a_off < M && gmem_b_off < N) {
+        for (int bk = 0; bk < (K + BK - 1) / BK; ++bk) {
+            if (bk * BK >= K) {
+                break;
+            }
+            
+            int gmem_a_k_off = bk * BK + col_a_k;
+            //int load_a_gmem_addr = gem_a_off * K + gmem_a_k_off;
+            // a需要转置
+            FLOAT4(shm_a[row_a_m][col_a_k]) = CONST_FLOAT4(a[gmem_a_off * K + gmem_a_k_off]);
+            //printf("shm_a[%d][%d] = %f\n", row_a_m, col_a_k, shm_a[row_a_m][col_a_k]);
+            auto gmem_b_k_off = bk * BK + row_b_k;
+            FLOAT4(shm_b[row_b_k][col_b_n]) = CONST_FLOAT4(b[gmem_b_off * K + gmem_b_k_off]);
+            __syncthreads();
+// 2. 从shm->reg, 计算matmul
+#pragma unroll
+            for (int k = 0; k < BK; ++k) {
+#pragma unroll
+                for (int m = 0; m < TM; ++m) {
+#pragma unroll
+                    for (int n = 0; n < TN; ++n) {
+                        reg_c[m][n] = shm_a[ty * TM + m][k] * shm_b[k][tx * TN + n];
+                        //printf("reg_c[%d][%d] = %f shm_a[%d, %d]: %f,  shm_b[%d, %d]: %f\n", m, n, reg_c[m][n], ty * TM + m, k, shm_a[ty * TM + m][k], k, tx * TN + n, shm_b[k][tx * TN + n]);
+                    }
+                }
+            }
+            __syncthreads();
+        }
+// 4. 写回global
+#pragma unroll
+        for (auto i = 0; i < TM; ++i) {
+            int gmem_m_c_off = by * BM + ty * TM + i;
+#pragma unroll
+            for (int j = 0; j < TN; j += 4) {
+                int gmem_n_c_off = bx * BN + tx * TN + j;
+                FLOAT4(c[gmem_m_c_off * N + gmem_n_c_off]) = FLOAT4(reg_c[i][j]);
+            }
+        }
+    }
 }
 
 void matmul(const float* a, const float* b, float* c, int M, int K, int N) {
@@ -185,6 +309,26 @@ void matmul(const float* a, const float* b, float* c, int M, int K, int N) {
         dim3 block(16, 16);
         dim3 grid((M + block.x - 1) / block.x, (N + block.y - 1) / block.y);
         matmul_naive_kernel<<<grid, block>>>(a, b, c, M, K, N);
+    }
+    {
+        const int BK = 16;
+        dim3 blockDim(BK, BK);
+        dim3 gridDim((M + BK - 1) / BK, (N + BK - 1) / BK);
+        matmul_kernel_shm<<<gridDim, blockDim>>>(a, b, c, M, K, N);
+    }
+    {
+        const int BK = 16;
+        dim3 blockDim(BK, BK);
+        dim3 gridDim((N + BK - 1) / BK, (M + BK - 1) / BK);
+        matmul_kernel_shm_row<<<gridDim, blockDim>>>(a, b, c, M, K, N);
+    }
+    {
+        // BN / TN = 16
+        const int BN = 128;
+        const int BM = 128;
+        dim3 blockDim(16, 16);
+        dim3 gridDim((N + BN - 1) / BN, (M + BM - 1) / BM);
+        matmul_kernel_float4_shm<<<gridDim, blockDim>>>(a, b, c, M, K, N);
     }
 }
 }  // namespace train_llm
@@ -217,9 +361,12 @@ int test_transpose() {
 
 // test
 int test_matmul() {
-    int M = 2;
-    int N = 2;
-    int K = 3;
+    int M = 4096;
+    int N = 4096;
+    int K = 4096;
+    //int M = 2;
+    //int N = 2;
+    //int K = 3;
     std::vector<float> h_mat1(M * K, 0);
     std::vector<float> h_mat2(N * K, 0);
     std::vector<float> h_out(N * M, 0);
@@ -235,11 +382,11 @@ int test_matmul() {
     cudaMemcpy(d_mat1, h_mat1.data(), M * K * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_mat2, h_mat2.data(), N * K * sizeof(float), cudaMemcpyHostToDevice);
     matmul(d_mat1, d_mat2, d_output, M, K, N);
-    debug_display_mat("mat1", d_mat1, M, K);
-    debug_display_mat("mat2", d_mat2, K, N);
-    debug_display_mat("output", d_output, M, N);
+    // debug_display_mat("mat1", d_mat1, M, K);
+    // debug_display_mat("mat2", d_mat2, K, N);
     cpu_matmul(h_mat1.data(), h_mat2.data(), h_out.data(), M, K, N);
-    debug_display_mat<float, false>("cpu_out", h_out.data(), M, N);
+    //debug_display_mat("output", d_output, M, N);
+    //debug_display_mat<float, false>("cpu_out", h_out.data(), M, N);
     return 0;
 }
 

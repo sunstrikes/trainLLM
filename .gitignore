@@ -1,3 +1,4 @@
 *.out
 .vscode
 output
+src/utils/profile.ncu-rep
