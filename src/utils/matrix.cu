@@ -5,6 +5,7 @@
 
 #include "time_recorder.h"
 #include "util.h"
+#include "reduce.cuh"
 
 namespace train_llm {
 
@@ -331,6 +332,37 @@ void matmul(const float* a, const float* b, float* c, int M, int K, int N) {
         matmul_kernel_float4_shm<<<gridDim, blockDim>>>(a, b, c, M, K, N);
     }
 }
+
+/*---------------------------sgemv(mat * vec)--------------------------*/
+// mat: M * N, x: N * 1, out: M * 1
+template<int warpSize=128>
+void sgemv(float* __restrict__ mat, float* __restrict__ x, float* out, const int M, const int N) {
+    const int bx = blockIdx.x;
+    const tx = threadIdx.x;
+    const ty = threadIdx.y;
+
+    int laneid = tx % wrapSize;
+
+    //grid_size: M / 4
+    int m = bx * blockDim.y + ty;
+    if (m < M) {
+        float sum = 0.0;
+        //这里只适合N < blockDim.x的场景
+        const int warp_num = (N + warpSize - 1) / warpSize;
+        #pragma unroll
+        for (int i = 0; i < warp_num; ++i) {
+            auto n = i * warp_size + laneid;
+            sum += mat[m * N + n] * x[n];
+        }
+        sum = WarpReduceSum<float, warpSize>(sum);
+        if (laneid == 0) {
+            out[m] = sum;
+        }
+    }
+}
+
+/*---------------------------dot(vec * vec)--------------------------*/
+
 }  // namespace train_llm
 
 using namespace train_llm;
