@@ -236,8 +236,6 @@ __global__ void matmul_kernel_shm_row(const float* a, const float* b, float* c, 
     }
 }
 
-#define FLOAT4(x) *(reinterpret_cast<float4*>(&(x)))
-#define CONST_FLOAT4(x) *(reinterpret_cast<const float4*>(&(x)))
 // float4 & shm
 template <int BK = 8, int BM = 128, int BN = 128>
 __global__ void matmul_kernel_float4_shm(const float* a, const float* b, float* c, int M, int K, int N) {

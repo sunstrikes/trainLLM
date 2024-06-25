@@ -1,18 +1,9 @@
 #include <cuda_runtime.h>
-#include <iostream>
-#include <vector>
-#include <random>
-#include <cub/cub.cuh>
-#include "time_recorder.h"
-#include "util.h"
 
 namespace train_llm {
+#define FLOAT4(x) *(reinterpret_cast<float4*>(&(x)))
+#define CONST_FLOAT4(x) *(reinterpret_cast<const float4*>(&(x)))
 
-/********************************transpose**********************************/
-
-}  // namespace train_llm
-
-using namespace train_llm;
 //warp操作集合: https://zhuanlan.zhihu.com/p/572820783
 template <typename T, int warpSize=32>
 __inline__ __device__ T WarpReduceSum(T val) {
@@ -25,12 +16,13 @@ __inline__ __device__ T WarpReduceSum(T val) {
   return val;
 }
 
-template <typename T, int warpSize=32>
-__inline__ __device__ T BlockReduceSum(T val, T* shared) {
+template <typename T, int numThreads=256, int warpSize=32>
+__inline__ __device__ T BlockReduceSum(T val) {
   const int laneid = threadIdx.x % warpSize;
   const int warpid = threadIdx.x / warpSize;
+  const int warp_num = (numThreads + warpSize - 1) / warpSize;
+  __shared__ T shared[warp_num];
   val = WarpReduceSum(val);
-  __syncthreads();
   if (laneid == 0) { //只有laneid是0的线程上是正确结果
     shared[warpid] = val;
   }
@@ -42,3 +34,5 @@ __inline__ __device__ T BlockReduceSum(T val, T* shared) {
   }
   return val;
 }
+
+}  // namespace train_llm
