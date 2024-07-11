@@ -9,7 +9,7 @@
 -   FlashAttention(TODO)
 -   ZeRO(from DeepSpeed TODO)
 -   Template MetaProgramming (TODO)
--   CUDA kernel optimize(TODO)
+-   CUDA kernel optimize(DOING)
 
 
 
