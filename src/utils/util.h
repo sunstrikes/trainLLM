@@ -1,7 +1,7 @@
 #pragma once
 #include <cuda_runtime.h>
 #include <iomanip>
-
+#include <stdlib.h> 
 namespace train_llm {
 
 template <typename T>
@@ -45,6 +45,12 @@ void random_mat(float* mat, int M, int N) {
         for (auto j = 0; j < N; ++j) {
             mat[i * N + j] = dis(gen);
         }
+    }
+}
+
+void random_int_tensor(int* tensor, int N, int range) {
+    for (auto j = 0; j < N; ++j) {
+        tensor[j] = rand() % range;
     }
 }
 
